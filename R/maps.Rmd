@@ -1,0 +1,196 @@
+---
+title: "MAPS"
+author: "Kenneth Kin Pomeyie"
+date: "8/17/2021"
+output: pdf_document
+---
+
+
+#Load packages and functions
+```{r}
+library(rnaturalearth) #returns world coastline at specified scale
+library(albersusa)  # returns U.S. state composite map  #devtools::install_github("hrbrmstr/albersusa")
+library(sf)
+
+
+Remove_na_cols <- function(data, desiredCols) {
+  completeVec <- complete.cases(data[, desiredCols])
+  return(data[completeVec, ])
+}
+```
+
+
+#Load data
+```{r}
+#load rtl data of respective stations
+RTL = combined_duration2345
+#stations = read.csv("../data/stations.csv")
+combined_geo <- left_join(x = RTL, y = stations, by = "ID") %>%
+    dplyr::select(ID, Station, State, LONGITUDE, LATITUDE, duration, RTL_2.5, RTL_3.0,  RTL_3_RATIO, RTL_3.25, RTL_3.5)
+combined_geo
+```
+
+#get coastal and world map as spatial objects
+```{r}
+coast_sf = ne_coastline(scale = "medium", returnclass = "sf")
+countries_sf = ne_countries(scale = "medium", returnclass = "sf")
+```
+
+
+
+
+
+
+
+
+#######################################################################################################################################
+########################################DURATION 2###################################################################################
+#######################################################################################################################################
+
+
+#Subset duration of 2 days
+```{r}
+combined_geo2 = combined_geo %>% 
+  filter(duration == 2)
+
+combined_geo2 = Remove_na_cols(combined_geo2, "RTL_3_RATIO")
+```
+
+#create sf object with geodata
+```{r}
+points_sf2 = st_as_sf(combined_geo2, coords = c("LONGITUDE", "LATITUDE" ), crs = 4326)
+```
+
+
+#map of RTL3 RATIO
+```{r}
+ggplot() +
+  geom_sf(data = usa_sf()) +
+  geom_sf(data = points_sf2, aes(RTL_3_RATIO, colour = cut(RTL_3_RATIO, c(0.4, 0.9999, 1.5, 2, 10))), alpha = 1, size = 2) +
+  coord_sf(xlim=c(-125, -67), ylim=c(20,50))+
+  scale_color_manual(name = "RATIO",
+                     values = c( "#440154FF",
+                                   "#31688EFF",
+                                 "#35B779FF",
+                                "#FDE725FF"),
+                     labels = c( "(0.5, 1)", "[1, 1.5]", "(1.5, 2]", "(2, 5.5)"  )) +
+  ggtitle("RTLs for Duration of 2 days")
+```
+
+
+
+
+#######################################################################################################################################
+########################################DURATION 3###################################################################################
+#######################################################################################################################################
+
+
+#Subset duration of 2 days
+```{r}
+combined_geo3 = combined_geo %>% 
+  filter(duration == 3)
+
+combined_geo3 = Remove_na_cols(combined_geo3, "RTL_3_RATIO")
+```
+
+#create sf object with geodata
+```{r}
+points_sf3 = st_as_sf(combined_geo3, coords = c("LONGITUDE", "LATITUDE" ), crs = 4326)
+```
+
+
+#map of RTL3 RATIO
+```{r}
+ggplot() +
+  geom_sf(data = usa_sf()) +
+  geom_sf(data = points_sf3, aes(RTL_3_RATIO, colour = cut(RTL_3_RATIO, c(0.4, 0.9999, 1.5, 2, 10))), alpha = 1, size = 2) +
+  coord_sf(xlim=c(-125, -67), ylim=c(20,50))+
+  scale_color_manual(name = "RATIO",
+                     values = c( "#440154FF",
+                                   "#31688EFF",
+                                 "#35B779FF",
+                                "#FDE725FF"),
+                     labels = c( "(0.5, 1)", "[1, 1.5]", "(1.5, 2]", "(2, 7)")) +
+  ggtitle("RTLs for Duration of 3 days")
+```
+
+
+
+
+#######################################################################################################################################
+########################################DURATION 4###################################################################################
+#######################################################################################################################################
+
+
+#Subset duration of 4 days
+```{r}
+combined_geo4 = combined_geo %>% 
+  filter(duration == 4)
+
+combined_geo4 = Remove_na_cols(combined_geo4, "RTL_3_RATIO")
+```
+
+#create sf object with geodata
+```{r}
+points_sf4 = st_as_sf(combined_geo4, coords = c("LONGITUDE", "LATITUDE" ), crs = 4326)
+```
+
+
+#map of RTL3 RATIO
+```{r}
+ggplot() +
+  geom_sf(data = usa_sf()) +
+  geom_sf(data = points_sf4, aes(RTL_3_RATIO, colour = cut(RTL_3_RATIO, c(0.4, 0.9999, 1.5, 2, 10))), alpha = 1, size = 2) +
+  coord_sf(xlim=c(-125, -67), ylim=c(20,50))+
+  scale_color_manual(name = "RATIO",
+                     values = c( "#440154FF",
+                                   "#31688EFF",
+                                 "#35B779FF",
+                                "#FDE725FF"),
+                    labels = c( "(0.5, 1)", "[1, 1.5]", "(1.5, 2]", "(2, 3.3)")) +
+  ggtitle("RTLs for Duration of 4 days")
+```
+
+
+
+
+
+#######################################################################################################################################
+########################################DURATION 5###################################################################################
+#######################################################################################################################################
+
+#Subset duration of 5 days
+```{r}
+combined_geo5 = combined_geo %>% 
+  filter(duration == 5)
+
+combined_geo5 = Remove_na_cols(combined_geo5, "RTL_3_RATIO")
+```
+
+#create sf object with geodata
+```{r}
+points_sf5 = st_as_sf(combined_geo5, coords = c("LONGITUDE", "LATITUDE" ), crs = 4326)
+```
+
+
+#map of RTL3 RATIO
+```{r}
+ggplot() +
+  geom_sf(data = usa_sf()) +
+  geom_sf(data = points_sf5, aes(RTL_3_RATIO, colour = cut(RTL_3_RATIO, c(0.4, 0.9999, 1.5, 2, 10))), alpha = 1, size = 2) +
+  coord_sf(xlim=c(-125, -67), ylim=c(20,50))+
+  scale_color_manual(name = "RATIO",
+                     values = c( "#440154FF",
+                                   "#31688EFF",
+                                 "#35B779FF",
+                                "#FDE725FF"),
+                    labels = c( "(0.5, 1)", "[1, 1.5]", "(1.5, 2]", "(2, 6)")) +
+  ggtitle("RTLs for Duration of 5 days")
+```
+
+
+
+
+
+
+

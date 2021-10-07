@@ -1,0 +1,617 @@
+---
+title: 'RTL: SNOW ACCUMULATION PEAKS'
+author: "Kenneth Kin Pomeyie"
+date: "8/17/2021"
+output: pdf_document
+---
+
+
+### 1) LOAD PACKAGES & FUNCTIONS
+```{r message=FALSE, warning=FALSE, include=}
+library(tidyverse)
+library(heatwaveR)
+library(randomForest)
+library(snowload2)
+library(lubridate)
+library(data.table)
+library(readxl)
+library(padr)
+library(raster)
+library(sp)
+library(MASS)
+library(fitdistrplus)
+library(extRemes)
+library(extraDistr)
+library(sm)
+library(hablar)
+library(varhandle)
+library(tictoc)
+library(JuliaCall)
+library(threshr)
+library(parallel)
+
+# This is the SWE estimation method used by HILL
+source("hill_conversion.R")
+
+#Download and install Julia REPL on your local machine before running the code below
+julia_setup(JULIA_HOME = "C:/Users/Kenneth Kin Pomeyie/AppData/Local/Programs/Julia-1.6.1/bin/") #change Julia home directory
+julia_library("Distributions")
+julia_library("DataFrames")
+julia_library("PoissonRandom")
+
+gr_data <- read_csv("../data/final_gr_models_08042020.csv")
+gr_model <- rtsnow::model_gr(cap = gr_data$cap[8],
+                             mse = gr_data$sd[8],
+                             intercept = gr_data$intercept[8],
+                             slope = gr_data$slope[8],
+                             lam = gr_data$transform[8],
+                             flat_line = gr_data$elevation[8])
+
+
+
+
+
+#Function to remove NA from desired column
+Remove_na_cols <- function(data, desiredCols) {
+  completeVec <- complete.cases(data[, desiredCols])
+  return(data[completeVec, ])
+}
+
+```
+
+
+
+
+
+
+#####  Load full dataset
+```{r}
+#Data is already screened for outlier(2020 National Snow Load Study)
+fos_data = read.csv("../data/fos_data.csv")
+stations = read.csv("../data/stations.csv")
+current_rtl  = read.csv("../data/kenneth_rtload_join.csv")
+```
+
+
+#####  Convert full dataset to list based on unique ID
+```{r}
+#Convert dataframe of FOS data into list
+ls_fos <- fos_data %>% 
+  filter(DATE >= '1930-10-01' & DATE <= "2020-06-30") %>%
+  mutate(ID = factor(ID, levels = unique(ID))) %>%
+  dplyr::select(ID, DATE, ELEMENT, VALUE) %>%
+  group_split(ID) %>%
+  setNames(unique(fos_data$ID))
+
+```
+
+
+
+
+##### 
+```{r}
+
+# function to extract snwd and wsed
+wesd_conversion <- function(station_data) {
+
+  station_data$DATE = as.Date(station_data$DATE)
+  
+  wesd = station_data %>%  
+    dplyr::filter(ELEMENT == 'WESD') %>%
+    dplyr::select(DATE, VALUE) %>%
+    mutate(VALUE = VALUE/10)
+  
+  snwd = station_data %>% 
+    dplyr::filter(ELEMENT == 'SNWD') %>%
+    dplyr::select(DATE, VALUE)
+
+
+
+
+#Combine WESD AND SNWD into one dataframe
+  combined <- data.frame(DATE = seq(from = as.Date("1930-10-01"), to = as.Date("2020-06-30"), by = 'day')) %>%
+    mutate(ID = unique(station_data$ID))
+
+ combined <- left_join(x = combined, y = stations, by = "ID") %>%
+    dplyr::select(ID, NAME, STATE, LONGITUDE, LATITUDE, DATE)
+    
+  combined <- merge(x = combined, y = snwd, by ="DATE", all.x = TRUE) %>%
+    rename(snwd = VALUE)
+  
+  
+ combined <- merge(x = combined, y = wesd, by ="DATE", all.x = TRUE) %>%
+    rename(wesd = VALUE)
+   
+    
+  combined$wesd <- as.numeric(combined$wesd)
+  combined$snwd <- as.numeric(combined$snwd)
+  combined$DATE <- as.Date(combined$DATE)
+
+
+
+
+  # R1: replace zero wesd with NA when snwd is positive
+  combined$wesd <- ifelse(combined$snwd > 0 & combined$wesd == 0, NA, combined$wesd )
+
+  #remove outlier not detected by 2020 National Snow study
+  combined$wesd <- ifelse(combined$wesd == 2291.10000 & combined$ID == "USW00014735", NA, combined$wesd) 
+  
+  
+  # R2: make wesd zero when snwd is zero
+  combined$wesd <- ifelse(combined$snwd == 0, 0, combined$wesd)
+
+
+ #Use the Hill conversion method to impute missing WESD values
+  combined <- combined %>%
+  dplyr::mutate(wesd_hill = hill_conversion(h = snwd,  lon = LONGITUDE,
+                                                lat = LATITUDE, date = DATE))
+
+  combined$wesd <- ifelse(is.na(combined$wesd), combined$wesd_hill, combined$wesd)
+
+  combined <- Remove_na_cols(combined, "wesd")
+
+
+
+  combined <- combined %>%
+  dplyr::select(ID, NAME, STATE, LATITUDE, LONGITUDE, DATE, snwd, wesd)
+
+
+return(combined)
+  
+}
+
+
+clean_dataset = lapply(ls_fos, FUN = wesd_conversion)
+```
+
+
+
+
+
+
+##############################################################################################################################
+############ ACCUMULATION PEAKS WITH DURATION OF 2 DAYS ########################################################################
+################################################################################################################################
+
+## Compute the station paramters with a minimum duration of 2 days of snow on ground
+```{r}
+source("station_parameterization_duration.R")
+
+#t = lapply(clean_dataset, FUN=my.meta.function1)
+#df_station_parameters_duration2 = do.call(rbind, lapply(clean_dataset, FUN = station_parameterization, duration = 2))
+
+#Extract accumulation peaks in parallel
+numCores = detectCores()
+
+cl = makeCluster(numCores)
+
+clusterExport(cl, c("clean_dataset", "station_parameterization", "Remove_na_cols") , envir = environment())
+clusterEvalQ(cl, {
+  library(tidyverse)
+  library(extRemes)
+  library(heatwaveR)
+  library(threshr)
+
+})
+
+df_station_parameters_duration2 = rbindlist(parLapply(cl, clean_dataset, station_parameterization, duration = 2))
+stopCluster(cl)
+
+```
+
+
+
+## Convert station distribution paramters from df to list
+```{r}
+list_station_parameters_duration2 <- df_station_parameters_duration2 %>%
+  mutate(ID = factor(ID, levels = unique(ID))) %>%
+  group_split(ID) %>%
+  setNames(unique(df_station_parameters_duration2$ID))
+```
+
+
+## Compute RTLs based on station parameters
+```{r}
+source("two_part_sim_RTLs.R")
+rtl_list = lapply(list_station_parameters_duration2, FUN = two_part_sim_RTLs)
+
+my.meta.function <- function(my.data){
+
+ df <- data.frame(ID = my.data[1],
+                 RTL_2.5 = my.data[2],
+                RTL_3.0 = my.data[3],
+                RTL_3.25 =my.data[4],
+                RTL_3.5 = my.data[5])
+ 
+ return(df)
+}
+
+df_rtl_duration2 = do.call(rbind,lapply(rtl_list, FUN=my.meta.function))
+
+df_rtl_duration2 = merge(x = df_station_parameters_duration2, y = df_rtl_duration2, by = "ID", all.x = TRUE) %>% 
+  convert(num(RTL_2.5, RTL_3.0, RTL_3.25, RTL_3.5)) %>% 
+  mutate(duration = 2) %>% 
+  dplyr::select(ID, Station, State, num_obs, location, scale, shape, duration, RTL_2.5, RTL_3.0, RTL_3.25, RTL_3.5) %>% 
+  arrange(State, Station)
+df_rtl_duration2
+
+```
+
+########################################################################################################################################
+
+
+
+##############################################################################################################################
+############ ACCUMULATION PEAKS WITH DURATION OF 3 DAYS ########################################################################
+################################################################################################################################
+
+
+## Compute the station paramters with a minimum duration of 2 days of snow on ground
+```{r}
+source("station_parameterization_duration.R")
+
+#df_station_parameters_duration3 = do.call(rbind, lapply(clean_dataset, FUN = station_parameterization, duration = 3))
+
+#Extract accumulation peaks in parallel
+numCores = detectCores()
+
+cl = makeCluster(numCores)
+
+clusterExport(cl, c("clean_dataset", "station_parameterization", "Remove_na_cols") , envir = environment())
+clusterEvalQ(cl, {
+  library(tidyverse)
+  library(extRemes)
+  library(heatwaveR)
+  library(threshr)
+
+})
+
+df_station_parameters_duration3 = rbindlist(parLapply(cl, clean_dataset, station_parameterization, duration = 3))
+stopCluster(cl)
+
+```
+
+
+
+## Convert station distribution paramters from df to list
+```{r}
+list_station_parameters_duration3 <- df_station_parameters_duration3 %>%
+  mutate(ID = factor(ID, levels = unique(ID))) %>%
+  group_split(ID) %>%
+  setNames(unique(df_station_parameters_duration3$ID))
+```
+
+
+## Compute RTLs based on station parameters
+```{r}
+source("two_part_sim_RTLs.R")
+rtl_list = lapply(list_station_parameters_duration3, FUN = two_part_sim_RTLs)
+
+my.meta.function <- function(my.data){
+
+ df <- data.frame(ID = my.data[1],
+                 RTL_2.5 = my.data[2],
+                RTL_3.0 = my.data[3],
+                RTL_3.25 =my.data[4],
+                RTL_3.5 = my.data[5])
+ 
+ return(df)
+}
+
+df_rtl_duration3 = do.call(rbind,lapply(rtl_list, FUN=my.meta.function))
+
+df_rtl_duration3 = merge(x = df_station_parameters_duration3, y = df_rtl_duration3, by = "ID", all.x = TRUE) %>% 
+  convert(num(RTL_2.5, RTL_3.0, RTL_3.25, RTL_3.5)) %>% 
+  mutate(duration = 3) %>% 
+  dplyr::select(ID, Station, State, num_obs, location, scale, shape, duration, RTL_2.5, RTL_3.0, RTL_3.25, RTL_3.5) %>% 
+  arrange(State, Station)
+df_rtl_duration3
+
+```
+
+
+
+########################################################################################################################################
+
+
+
+##############################################################################################################################
+############ ACCUMULATION PEAKS WITH DURATION OF 4 DAYS ########################################################################
+################################################################################################################################
+
+## Compute the station paramters with a minimum duration of 2 days of snow on ground
+```{r}
+source("station_parameterization_duration.R")
+
+#df_station_parameters_duration4 = do.call(rbind, lapply(clean_dataset, FUN = station_parameterization, duration = 4))
+
+#Extract accumulation peaks in parallel
+numCores = detectCores()
+
+cl = makeCluster(numCores)
+
+clusterExport(cl, c("clean_dataset", "station_parameterization", "Remove_na_cols") , envir = environment())
+clusterEvalQ(cl, {
+  library(tidyverse)
+  library(extRemes)
+  library(heatwaveR)
+  library(threshr)
+
+})
+
+df_station_parameters_duration4 = rbindlist(parLapply(cl, clean_dataset, station_parameterization, duration = 4))
+stopCluster(cl)
+
+```
+
+
+
+## Convert station distribution paramters from df to list
+```{r}
+list_station_parameters_duration4 <- df_station_parameters_duration4 %>%
+  mutate(ID = factor(ID, levels = unique(ID))) %>%
+  group_split(ID) %>%
+  setNames(unique(df_station_parameters_duration4$ID))
+```
+
+
+## Compute RTLs based on station parameters
+```{r}
+source("two_part_sim_RTLs.R")
+rtl_list = lapply(list_station_parameters_duration4, FUN = two_part_sim_RTLs)
+
+my.meta.function <- function(my.data){
+
+ df <- data.frame(ID = my.data[1],
+                 RTL_2.5 = my.data[2],
+                RTL_3.0 = my.data[3],
+                RTL_3.25 =my.data[4],
+                RTL_3.5 = my.data[5])
+ 
+ return(df)
+}
+
+df_rtl_duration4 = do.call(rbind,lapply(rtl_list, FUN=my.meta.function))
+
+df_rtl_duration4 = merge(x = df_station_parameters_duration4, y = df_rtl_duration4, by = "ID", all.x = TRUE) %>% 
+  convert(num(RTL_2.5, RTL_3.0, RTL_3.25, RTL_3.5)) %>% 
+  mutate(duration = 4) %>% 
+  dplyr::select(ID, Station, State, num_obs, location, scale, shape, duration, RTL_2.5, RTL_3.0, RTL_3.25, RTL_3.5) %>% 
+  arrange(State, Station)
+df_rtl_duration4
+
+```
+
+########################################################################################################################################
+
+
+
+##############################################################################################################################
+############ ACCUMULATION PEAKS WITH DURATION OF 5 DAYS ########################################################################
+################################################################################################################################
+
+## Compute the station paramters with a minimum duration of 2 days of snow on ground
+```{r}
+source("station_parameterization_duration.R")
+
+#df_station_parameters_duration5 = do.call(rbind, lapply(clean_dataset, FUN = station_parameterization, duration = 5))
+
+#Extract accumulation peaks in parallel
+numCores = detectCores()
+
+cl = parallel::makeCluster(numCores)
+
+parallel::clusterExport(cl, c("clean_dataset", "station_parameterization", "Remove_na_cols") , envir = environment())
+parallel::clusterEvalQ(cl, {
+  library(tidyverse)
+  library(extRemes)
+  library(heatwaveR)
+  library(threshr)
+
+})
+
+df_station_parameters_duration5 = rbindlist(parLapply(cl, clean_dataset, station_parameterization, duration = 5))
+parallel::stopCluster(cl)
+
+```
+
+
+
+## Convert station distribution paramters from df to list
+```{r}
+list_station_parameters_duration5 <- df_station_parameters_duration5 %>%
+  mutate(ID = factor(ID, levels = unique(ID))) %>%
+  group_split(ID) %>%
+  setNames(unique(df_station_parameters_duration5$ID))
+```
+
+
+## Compute RTLs based on station parameters
+```{r}
+source("two_part_sim_RTLs.R")
+rtl_list = lapply(list_station_parameters_duration5, FUN = two_part_sim_RTLs)
+
+my.meta.function <- function(my.data){
+
+ df <- data.frame(ID = my.data[1],
+                 RTL_2.5 = my.data[2],
+                RTL_3.0 = my.data[3],
+                RTL_3.25 =my.data[4],
+                RTL_3.5 = my.data[5])
+ 
+ return(df)
+}
+
+df_rtl_duration5 = do.call(rbind,lapply(rtl_list, FUN=my.meta.function))
+
+df_rtl_duration5 = merge(x = df_station_parameters_duration5, y = df_rtl_duration5, by = "ID", all.x = TRUE) %>% 
+  convert(num(RTL_2.5, RTL_3.0, RTL_3.25, RTL_3.5)) %>% 
+  mutate(duration = 5) %>% 
+  dplyr::select(ID, Station, State, num_obs, location, scale, shape, duration, RTL_2.5, RTL_3.0, RTL_3.25, RTL_3.5) %>% 
+  arrange(State, Station)
+df_rtl_duration5
+
+```
+
+
+########################################################################################################################################
+
+
+## Combine RTLS from based on duration 2, 3, 4, and 5 days
+```{r}
+combined_duration2345 = do.call("rbind", list(df_rtl_duration2, df_rtl_duration3, df_rtl_duration4, df_rtl_duration5)) %>% 
+  arrange(State, Station, duration)
+combined_duration2345
+```
+
+
+```{r}
+current_rtl <- current_rtl %>%
+  dplyr::select(ID, RT_II)
+  
+combined_duration2345 = merge(x = combined_duration2345, y = current_rtl, by = "ID", all.x = TRUE) %>%
+  mutate(RTL_3_RATIO = RTL_3.0/RT_II) %>%
+  dplyr::select(ID, Station,State, num_obs, location, scale, shape, duration,RTL_2.5, RTL_3.0,  RTL_3_RATIO, RTL_3.25, RTL_3.5) %>%
+  arrange(State, Station, duration)
+
+combined_duration2345
+```
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
